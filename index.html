@@ -6,7 +6,6 @@
     <title>Distributed Cluster Weight Controller</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgpu@4.15.0/dist/tf-backend-webgpu.min.js"></script>
     
     <script>
         let nodeRole = null;
@@ -27,15 +26,15 @@
 
         async function initGPU() {
             try {
-                await tf.ready();
-                if (tf.findBackend('webgpu')) {
-                    await tf.setBackend('webgpu');
-                    log("Success: Next-generation WebGPU Compute Backend activated natively.");
-                } else {
-                    await tf.setBackend('webgl');
-                    log("Fallback: Standard WebGL texture backend assigned.");
-                }
+                // Force stable WebGL initialization
+                log("Requesting WebGL backend context initialization...");
+                await tf.setBackend('webgl');
+                await tf.ready(); // Ensures WebGL textures and shader programs are fully ready
+                
                 document.getElementById('gpu-status').innerText = `Active Hardware Acceleration Backend: [${tf.getBackend().toUpperCase()}]`;
+                log("Success: WebGL execution context safely established.");
+                
+                // NOW we can safely allocate weights because the backend is active
                 await allocateModelWeights("mock_fp16");
             } catch (e) {
                 console.error(e);
@@ -49,15 +48,20 @@
                 activeModelWeights.dispose();
             }
 
-            if (profileType === "mock_fp16") {
-                activeModelWeights = {
-                    type: "layer",
-                    kernel: tf.randomNormal([1024, 1024], 0, 0.02),
-                    bias: tf.zeros([1024])
-                };
-                log("Assembled synthetic high-speed hidden-dimension structural matrices inside GPU memory.");
-            } else if (profileType === "pretrained_tiny") {
-                log("Streaming graph structures down from public CDN straight into active VRAM textures...");
+            // Wrap weight creation in a tidy block to ensure clean WebGL texture allocation
+            tf.tidy(() => {
+                if (profileType === "mock_fp16") {
+                    activeModelWeights = {
+                        type: "layer",
+                        kernel: tf.keep(tf.randomNormal([1024, 1024], 0, 0.02)),
+                        bias: tf.keep(tf.zeros([1024]))
+                    };
+                    log("Assembled synthetic hidden-dimension structural matrices inside WebGL VRAM.");
+                }
+            });
+
+            if (profileType === "pretrained_tiny") {
+                log("Streaming graph structures down from public CDN straight into active WebGL textures...");
                 try {
                     const url = "https://storage.googleapis.com/tfjs-models/tfjs/mnist_transfer_cnn_v1/model.json";
                     activeModelWeights = await tf.loadLayersModel(url);
@@ -69,7 +73,6 @@
             }
         }
 
-        // Exposed Function triggered by UI Buttons safely
         async function electRole(role) {
             nodeRole = role;
             document.getElementById('role-selection').style.display = 'none';
@@ -80,6 +83,7 @@
             badge.className = `status-badge ${role}`;
             document.getElementById('panel-title').innerText = `${role.charAt(0).toUpperCase() + role.slice(1)} Performance Console (${nodeId})`;
 
+            // Await the hardware initialization fully BEFORE doing network sync tasks
             await initGPU();
             setupMeshCommunication();
 
