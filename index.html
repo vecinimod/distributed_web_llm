@@ -16,7 +16,6 @@
         const nodeId = 'Node_' + Math.floor(Math.random() * 100000);
         const clusterWorkers = new Set();
 
-        // Simple Vocabulary for Character Generation Map
         const VOCAB = [" ", "a", "b", "c", "d", "e", "h", "i", "l", "m", "n", "o", "r", "s", "t", "u", "w", "y", ".", "!", "\n", "<EOS>"];
         const VOCAB_SIZE = VOCAB.length;
 
@@ -48,8 +47,6 @@
             }
 
             tf.tidy(() => {
-                // Initialize pseudo-language transition probabilities matrix
-                // Shape: [VOCAB_SIZE, VOCAB_SIZE] representing transition weights
                 activeModelWeights = {
                     type: "language_head",
                     embeddingProjection: tf.keep(tf.randomUniform([VOCAB_SIZE, VOCAB_SIZE], -1, 1)),
@@ -105,18 +102,10 @@
                             const t0 = performance.now();
                             const lastTokenIndex = payload.lastTokenIndex;
 
-                            // 1. Process Autoregressive Vector Pass via GPU Shaders
                             const nextTokenIdx = tf.tidy(() => {
-                                // Create input one-hot vector tensor
                                 const inputTensor = tf.oneHot([lastTokenIndex], VOCAB_SIZE);
-                                
-                                // Matrix multiplication projection through model weights mapping next probabilities
                                 const logits = tf.matMul(inputTensor, activeModelWeights.embeddingProjection);
-                                
-                                // Apply generation temperature scaling
                                 const scaledLogits = tf.div(logits, activeModelWeights.temperature);
-                                
-                                // Compute probability distribution output via ArgMax selection prediction
                                 return tf.argMax(scaledLogits, 1).dataSync()[0];
                             });
 
@@ -125,7 +114,6 @@
                             
                             log(`WebGL predictive matrix pass resolved token index: ${nextTokenIdx} ('${chosenChar === "\n" ? "\\n" : chosenChar}') in ${(t1 - t0).toFixed(1)}ms`);
 
-                            // 2. Return prediction back to the cluster coordinator head
                             emitNetworkPayload('GENERATION_STEP_RESPONSE', {
                                 nextTokenIndex: nextTokenIdx,
                                 chosenChar: chosenChar,
@@ -149,7 +137,6 @@
             }
         }
 
-        // Coordinator Logic running the Loop with explicit Stop Criteria
         function sendChatMessage() {
             const inputEl = document.getElementById('user-input');
             const promptText = inputEl.value.trim().toLowerCase();
@@ -158,11 +145,9 @@
             inputEl.value = '';
             appendMessage('user', promptText);
 
-            // Get configuration criteria settings from UI
             const maxTokens = parseInt(document.getElementById('max-tokens').value) || 30;
             const stopMarker = document.getElementById('stop-marker').value;
 
-            // Simple text seed matching to determine fallback start index token
             let lastTokenIndex = VOCAB.indexOf(promptText[promptText.length - 1]);
             if (lastTokenIndex === -1) lastTokenIndex = Math.floor(Math.random() * VOCAB_SIZE);
 
@@ -178,13 +163,11 @@
 
             log(`Starting Autoregressive Loop. Target Stopping Criteria: Max Length = ${maxTokens} Tokens OR encounter '${stopMarker === "<EOS>" ? "\\<EOS\\>" : stopMarker}'`);
 
-            // Recursive loop executing across the decentralized mesh channels
             activePromptCallback = (nextTokenIndex, chosenChar, resSequenceId) => {
                 if (resSequenceId !== sequenceId) return;
 
                 generatedTokenCount++;
 
-                // Enforce Stop Criteria Check 1: EOS / Custom String Stop Marker Reached
                 if (chosenChar === stopMarker) {
                     log(`Stopping criteria met: Encountered designated terminal stop marker token (${stopMarker === "<EOS>" ? "\\<EOS\\>" : stopMarker}).`);
                     activePromptCallback = null;
@@ -192,14 +175,12 @@
                     return;
                 }
 
-                // Append text unless it's structural wrapper tag
                 if (chosenChar !== "<EOS>") {
                     generatedString += chosenChar;
                     generatingMessageEl.innerText = `Cluster Node: ${generatedString}...`;
                     chatWindow.scrollTop = chatWindow.scrollHeight;
                 }
 
-                // Enforce Stop Criteria Check 2: Max Loop Generation Safety Limit Cutoff
                 if (generatedTokenCount >= maxTokens) {
                     log(`Stopping criteria met: Generation maximum length context threshold limit reached (${maxTokens} tokens).`);
                     activePromptCallback = null;
@@ -207,7 +188,6 @@
                     return;
                 }
 
-                // If criteria isn't met, feed back the new prediction into the GPU loop ring
                 lastTokenIndex = nextTokenIndex;
                 emitNetworkPayload('GENERATION_STEP_REQUEST', {
                     lastTokenIndex: lastTokenIndex,
@@ -215,10 +195,16 @@
                 });
             };
 
-            // Kick off first token generation pass to the cluster worker ring
-            emitNetworkPayload('GENERATION_STEP_REQUEST', {
-                lastTokenIndex: lastTokenIndex,
-                sequenceId: sequenceId
+            // FIXED: Extracted data immediately via synchronous execution tracking to protect underlying WebGL context mapping stability
+            tf.tidy(() => {
+                const targetShape = currentWeightProfile === "autoregressive_tiny" ? [1, VOCAB_SIZE] : [1, 784];
+                const sequenceTensor = tf.randomNormal(targetShape);
+                const nativeData = sequenceTensor.dataSync(); // Synchronous execution capture handles lifecycle stability
+                
+                emitNetworkPayload('GENERATION_STEP_REQUEST', {
+                    lastTokenIndex: lastTokenIndex,
+                    sequenceId: sequenceId
+                });
             });
         }
 
