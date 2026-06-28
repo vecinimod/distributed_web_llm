@@ -3,9 +3,244 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Distributed TinyLLM & WebGPU Engine</title>
+    <title>Distributed Cluster Weight Controller</title>
+    
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgpu@4.15.0/dist/tf-backend-webgpu.min.js"></script>
+    
+    <script>
+        let nodeRole = null;
+        let networkChannel = null;
+        let activeModelWeights = null;
+        let currentWeightProfile = "mock_fp16";
+        let activePromptCallback = null;
+        const nodeId = 'Node_' + Math.floor(Math.random() * 100000);
+        const clusterWorkers = new Set();
+
+        function log(msg) {
+            const logEl = document.getElementById('log');
+            if (!logEl) return;
+            const timestamp = new Date().toLocaleTimeString();
+            logEl.textContent += `[${timestamp}] ${msg}\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        async function initGPU() {
+            try {
+                await tf.ready();
+                if (tf.findBackend('webgpu')) {
+                    await tf.setBackend('webgpu');
+                    log("Success: Next-generation WebGPU Compute Backend activated natively.");
+                } else {
+                    await tf.setBackend('webgl');
+                    log("Fallback: Standard WebGL texture backend assigned.");
+                }
+                document.getElementById('gpu-status').innerText = `Active Hardware Acceleration Backend: [${tf.getBackend().toUpperCase()}]`;
+                await allocateModelWeights("mock_fp16");
+            } catch (e) {
+                console.error(e);
+                log(`Critical hardware engine initialization failure: ${e.message}`);
+            }
+        }
+
+        async function allocateModelWeights(profileType) {
+            currentWeightProfile = profileType;
+            if (activeModelWeights && typeof activeModelWeights.dispose === 'function') {
+                activeModelWeights.dispose();
+            }
+
+            if (profileType === "mock_fp16") {
+                activeModelWeights = {
+                    type: "layer",
+                    kernel: tf.randomNormal([1024, 1024], 0, 0.02),
+                    bias: tf.zeros([1024])
+                };
+                log("Assembled synthetic high-speed hidden-dimension structural matrices inside GPU memory.");
+            } else if (profileType === "pretrained_tiny") {
+                log("Streaming graph structures down from public CDN straight into active VRAM textures...");
+                try {
+                    const url = "https://storage.googleapis.com/tfjs-models/tfjs/mnist_transfer_cnn_v1/model.json";
+                    activeModelWeights = await tf.loadLayersModel(url);
+                    tf.tidy(() => { activeModelWeights.predict(tf.zeros([1, 28, 28, 1])); });
+                    log("Pre-trained structural asset graph initialized & warmed up inside local shaders.");
+                } catch (err) {
+                    log(`Failed to fetch model weights: ${err.message}`);
+                }
+            }
+        }
+
+        // Exposed Function triggered by UI Buttons safely
+        async function electRole(role) {
+            nodeRole = role;
+            document.getElementById('role-selection').style.display = 'none';
+            document.getElementById('panel-interface').style.display = 'block';
+            
+            const badge = document.getElementById('role-badge');
+            badge.innerText = role.toUpperCase();
+            badge.className = `status-badge ${role}`;
+            document.getElementById('panel-title').innerText = `${role.charAt(0).toUpperCase() + role.slice(1)} Performance Console (${nodeId})`;
+
+            await initGPU();
+            setupMeshCommunication();
+
+            if (role === 'coordinator') {
+                document.getElementById('coordinator-controls').style.display = 'block';
+                log("Coordinator listening for optimized compute shard heartbeats...");
+            } else {
+                document.getElementById('worker-controls').style.display = 'block';
+                const pill = document.getElementById('active-weight-pill');
+                if (pill) pill.innerText = "FP16 MATRICES";
+                document.getElementById('model-status').innerText = "Weights Sync Active";
+                document.getElementById('model-status').style.color = "#00ffcc";
+                emitNetworkPayload('WORKER_HEARTBEAT', { nodeId: nodeId });
+            }
+        }
+
+        function broadcastWeightMigration() {
+            const val = document.getElementById('weight-selector').value;
+            log(`Broadcasting configuration change to entire cluster network: ${val}`);
+            allocateModelWeights(val);
+            emitNetworkPayload('CLUSTER_WEIGHT_SYNC', { profile: val });
+        }
+
+        function setupMeshCommunication() {
+            networkChannel = new BroadcastChannel('dist_llm_optimized_mesh');
+
+            networkChannel.onmessage = async (event) => {
+                const { type, payload, senderId } = event.data;
+                if (senderId === nodeId) return;
+
+                switch (type) {
+                    case 'WORKER_HEARTBEAT':
+                        if (nodeRole === 'coordinator') {
+                            clusterWorkers.add(senderId);
+                            document.getElementById('worker-count').innerText = clusterWorkers.size;
+                            document.getElementById('btn-send').disabled = false;
+                            log(`Discovered available compute shard instance: ${senderId}`);
+                        }
+                        break;
+
+                    case 'CLUSTER_WEIGHT_SYNC':
+                        if (nodeRole === 'worker') {
+                            log(`Received instruction to rebuild model matrix configurations to: ${payload.profile}`);
+                            const pill = document.getElementById('active-weight-pill');
+                            if (pill) pill.innerText = payload.profile.toUpperCase();
+                            await allocateModelWeights(payload.profile);
+                        }
+                        break;
+
+                    case 'CHAT_PROMPT_SUBMITTED':
+                        if (nodeRole === 'worker') {
+                            const t0 = performance.now();
+                            const serializedFp16View = new Float16Array(payload.quantizedArrayBuffer);
+                            const nativeFloat32Array = Float32Array.from(serializedFp16View);
+                            
+                            const inboundTensor = tf.tensor(nativeFloat32Array, payload.shape);
+                            
+                            try {
+                                const computedOutput = tf.tidy(() => {
+                                    if (currentWeightProfile === "mock_fp16") {
+                                        const matMulPass = tf.matMul(inboundTensor, activeModelWeights.kernel);
+                                        return tf.relu(tf.add(matMulPass, activeModelWeights.bias));
+                                    } else {
+                                        const structuredInput = inboundTensor.reshape([1, 28, 28, 1]);
+                                        return activeModelWeights.predict(structuredInput);
+                                    }
+                                });
+
+                                const nativeFloatArray = await computedOutput.data();
+                                const outputShape = computedOutput.shape;
+
+                                inboundTensor.dispose();
+                                computedOutput.dispose();
+
+                                const outputFp16Array = new Float16Array(nativeFloatArray);
+                                const t1 = performance.now();
+                                log(`Scoring cycle complete (${(t1 - t0).toFixed(1)}ms). Returning compressed frame...`);
+                                
+                                emitNetworkPayload('COMPUTE_PASS_FINISHED', {
+                                    originalPrompt: payload.promptText,
+                                    quantizedArrayBuffer: outputFp16Array.buffer,
+                                    shape: outputShape
+                                });
+                            } catch (err) {
+                                log(`Calculation layer compute exception: ${err.message}`);
+                            }
+                        }
+                        break;
+
+                    case 'COMPUTE_PASS_FINISHED':
+                        if (nodeRole === 'coordinator' && activePromptCallback) {
+                            const rawView = new Float16Array(payload.quantizedArrayBuffer);
+                            const processedFloat32Array = Float32Array.from(rawView);
+                            activePromptCallback(payload.originalPrompt, processedFloat32Array);
+                        }
+                        break;
+                }
+            };
+        }
+
+        if (typeof window.Float16Array === 'undefined') {
+            window.Float16Array = class Float16Array extends Float32Array {};
+        }
+
+        function emitNetworkPayload(type, payload) {
+            if (networkChannel) {
+                networkChannel.postMessage({ type, payload, senderId: nodeId });
+            }
+        }
+
+        function sendChatMessage() {
+            const inputEl = document.getElementById('user-input');
+            const promptText = inputEl.value.trim();
+            if (!promptText) return;
+
+            inputEl.value = '';
+            appendMessage('user', promptText);
+
+            const targetShape = currentWeightProfile === "mock_fp16" ? [1, 1024] : [1, 784];
+            const sequenceTensor = tf.randomNormal(targetShape);
+
+            sequenceTensor.data().then(data => {
+                const fp16ArrayBufferView = new Float16Array(data);
+                
+                activePromptCallback = (originalText, computedWeights) => {
+                    activePromptCallback = null;
+                    const mockGeneratedResponse = parseWeightsToText(originalText, computedWeights);
+                    appendMessage('assistant', mockGeneratedResponse);
+                };
+
+                emitNetworkPayload('CHAT_PROMPT_SUBMITTED', {
+                    promptText: promptText,
+                    shape: sequenceTensor.shape,
+                    quantizedArrayBuffer: fp16ArrayBufferView.buffer
+                });
+
+                sequenceTensor.dispose();
+            });
+        }
+
+        function appendMessage(sender, text) {
+            const chatWindow = document.getElementById('chat-window');
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${sender}`;
+            messageEl.innerText = sender === 'user' ? text : `Cluster Node: ${text}`;
+            chatWindow.appendChild(messageEl);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        function parseWeightsToText(prompt, floatArray) {
+            const profileTag = currentWeightProfile === "mock_fp16" ? "Synthetic Matrix Block" : "Pre-trained CNN Graph Head";
+            const responses = [
+                `Processed via ${profileTag} - layer configurations successfully mapping evaluations.`,
+                `Distributed calculations completed using valid sharded nodes on your local network.`,
+                `The live cluster nodes returned array outputs utilizing performance optimization tracks.`
+            ];
+            const index = Math.abs(Math.floor(floatArray[0] * 100)) % responses.length;
+            return `${responses[index]} (Vector sample trace head: ${floatArray[0].toFixed(4)})`;
+        }
+    </script>
+
     <style>
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
@@ -161,155 +396,5 @@
     </div>
 </div>
 
-<script>
-    let nodeRole = null;
-    let networkChannel = null;
-    let activeModelWeights = null;
-    let currentWeightProfile = "mock_fp16";
-    let activePromptCallback = null;
-    const nodeId = 'Node_' + Math.floor(Math.random() * 100000);
-    const clusterWorkers = new Set();
-
-    const logEl = document.getElementById('log');
-    function log(msg) {
-        const timestamp = new Date().toLocaleTimeString();
-        logEl.textContent += `[${timestamp}] ${msg}\n`;
-        logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    async function initGPU() {
-        try {
-            await tf.ready();
-            if (tf.findBackend('webgpu')) {
-                await tf.setBackend('webgpu');
-                log("Success: Next-generation WebGPU Compute Backend activated natively.");
-            } else {
-                await tf.setBackend('webgl');
-                log("Fallback: Standard WebGL texture backend assigned.");
-            }
-            document.getElementById('gpu-status').innerText = `Active Hardware Acceleration Backend: [${tf.getBackend().toUpperCase()}]`;
-            await allocateModelWeights("mock_fp16");
-        } catch (e) {
-            log(`Critical hardware engine initialization failure: ${e.message}`);
-        }
-    }
-
-    // Dynamic configuration switcher: Loads custom weights vs pre-trained network shapes
-    async function allocateModelWeights(profileType) {
-        currentWeightProfile = profileType;
-        if (activeModelWeights && typeof activeModelWeights.dispose === 'function') {
-            activeModelWeights.dispose();
-        }
-
-        if (profileType === "mock_fp16") {
-            activeModelWeights = {
-                type: "layer",
-                kernel: tf.randomNormal([1024, 1024], 0, 0.02),
-                bias: tf.zeros([1024])
-            };
-            log("Assembled synthetic high-speed hidden-dimension structural matrices inside GPU memory.");
-        } else if (profileType === "pretrained_tiny") {
-            log("Streaming graph structures down from public CDN straight into active VRAM textures...");
-            try {
-                // Fetch valid open topology configuration via Google TFJS repository
-                const url = "https://storage.googleapis.com/tfjs-models/tfjs/mnist_transfer_cnn_v1/model.json";
-                activeModelWeights = await tf.loadLayersModel(url);
-                
-                // Warm up shaders
-                tf.tidy(() => { activeModelWeights.predict(tf.zeros([1, 28, 28, 1])); });
-                log("Pre-trained structural asset graph initialized & warmed up inside local shaders.");
-            } catch (err) {
-                log(`Failed to fetch model weights: ${err.message}`);
-            }
-        }
-    }
-
-    async function electRole(role) {
-        nodeRole = role;
-        document.getElementById('role-selection').style.display = 'none';
-        document.getElementById('panel-interface').style.display = 'block';
-        
-        const badge = document.getElementById('role-badge');
-        badge.innerText = role.toUpperCase();
-        badge.className = `status-badge ${role}`;
-        document.getElementById('panel-title').innerText = `${role.charAt(0).toUpperCase() + role.slice(1)} Performance Console (${nodeId})`;
-
-        await initGPU();
-        setupMeshCommunication();
-
-        if (role === 'coordinator') {
-            document.getElementById('coordinator-controls').style.display = 'block';
-            log("Coordinator listening for optimized compute shard heartbeats...");
-        } else {
-            document.getElementById('worker-controls').style.display = 'block';
-            document.getElementById('model-status').innerText = "Weights Sync Active";
-            document.getElementById('model-status').style.color = "#00ffcc";
-            emitNetworkPayload('WORKER_HEARTBEAT', { nodeId: nodeId });
-        }
-    }
-
-    function broadcastWeightMigration() {
-        const val = document.getElementById('weight-selector').value;
-        log(`Broadcasting configuration change to entire cluster network: ${val}`);
-        allocateModelWeights(val);
-        emitNetworkPayload('CLUSTER_WEIGHT_SYNC', { profile: val });
-    }
-
-    function setupMeshCommunication() {
-        networkChannel = new BroadcastChannel('dist_llm_optimized_mesh');
-
-        networkChannel.onmessage = async (event) => {
-            const { type, payload, senderId } = event.data;
-            if (senderId === nodeId) return;
-
-            switch (type) {
-                case 'WORKER_HEARTBEAT':
-                    if (nodeRole === 'coordinator') {
-                        clusterWorkers.add(senderId);
-                        document.getElementById('worker-count').innerText = clusterWorkers.size;
-                        document.getElementById('btn-send').disabled = false;
-                        log(`Discovered available compute shard instance: ${senderId}`);
-                    }
-                    break;
-
-                case 'CLUSTER_WEIGHT_SYNC':
-                    if (nodeRole === 'worker') {
-                        log(`Received instruction to rebuild model matrix configurations to: ${payload.profile}`);
-                        document.getElementById('active-weight-pill').innerText = payload.profile.toUpperCase();
-                        await allocateModelWeights(payload.profile);
-                    }
-                    break;
-
-                case 'CHAT_PROMPT_SUBMITTED':
-                    if (nodeRole === 'worker') {
-                        const t0 = performance.now();
-                        const serializedFp16View = new Float16Array(payload.quantizedArrayBuffer);
-                        const nativeFloat32Array = Float32Array.from(serializedFp16View);
-                        
-                        const inboundTensor = tf.tensor(nativeFloat32Array, payload.shape);
-                        
-                        try {
-                            const computedOutput = tf.tidy(() => {
-                                if (currentWeightProfile === "mock_fp16") {
-                                    const matMulPass = tf.matMul(inboundTensor, activeModelWeights.kernel);
-                                    return tf.relu(tf.add(matMulPass, activeModelWeights.bias));
-                                } else {
-                                    // Reshape array to match pre-trained CNN feature parameters
-                                    const structuredInput = inboundTensor.reshape([1, 28, 28, 1]);
-                                    return activeModelWeights.predict(structuredInput);
-                                }
-                            });
-
-                            const nativeFloatArray = await computedOutput.data();
-                            const outputShape = computedOutput.shape;
-
-                            inboundTensor.dispose();
-                            computedOutput.dispose();
-
-                            const outputFp16Array = new Float16Array(nativeFloatArray);
-                            const t1 = performance.now();
-                            log(`Scoring cycle complete (${(t1 - t0).toFixed(1)}ms). Returning compressed frame...`);
-                            
-                            emitNetworkPayload('COMPUTE_PASS_FINISHED', {
-                                originalPrompt: payload.promptText,
-                                quantizedArrayBuffer: outputFp16Array.buffer,
+</body>
+</html>
