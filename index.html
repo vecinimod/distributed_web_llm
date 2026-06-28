@@ -102,6 +102,7 @@
                             const t0 = performance.now();
                             const lastTokenIndex = payload.lastTokenIndex;
 
+                            // Completely sandboxed compute inside a synchronous transaction block
                             const nextTokenIdx = tf.tidy(() => {
                                 const inputTensor = tf.oneHot([lastTokenIndex], VOCAB_SIZE);
                                 const logits = tf.matMul(inputTensor, activeModelWeights.embeddingProjection);
@@ -148,6 +149,7 @@
             const maxTokens = parseInt(document.getElementById('max-tokens').value) || 30;
             const stopMarker = document.getElementById('stop-marker').value;
 
+            // Safe lookup using standard native array mapping
             let lastTokenIndex = VOCAB.indexOf(promptText[promptText.length - 1]);
             if (lastTokenIndex === -1) lastTokenIndex = Math.floor(Math.random() * VOCAB_SIZE);
 
@@ -161,7 +163,7 @@
             generatingMessageEl.innerText = "Cluster Node: ...";
             chatWindow.appendChild(generatingMessageEl);
 
-            log(`Starting Autoregressive Loop. Target Stopping Criteria: Max Length = ${maxTokens} Tokens OR encounter '${stopMarker === "<EOS>" ? "\\<EOS\\>" : stopMarker}'`);
+            log(`Starting Loop. Criteria: Max = ${maxTokens} Tokens OR marker '${stopMarker === "<EOS>" ? "\\<EOS\\>" : stopMarker}'`);
 
             activePromptCallback = (nextTokenIndex, chosenChar, resSequenceId) => {
                 if (resSequenceId !== sequenceId) return;
@@ -169,7 +171,7 @@
                 generatedTokenCount++;
 
                 if (chosenChar === stopMarker) {
-                    log(`Stopping criteria met: Encountered designated terminal stop marker token (${stopMarker === "<EOS>" ? "\\<EOS\\>" : stopMarker}).`);
+                    log(`Stopping criteria met: Encountered stop token (${stopMarker === "<EOS>" ? "\\<EOS\\>" : stopMarker}).`);
                     activePromptCallback = null;
                     generatingMessageEl.innerText = `Cluster Node: ${generatedString} [STOP_CRITERIA: MARKER]`;
                     return;
@@ -182,12 +184,13 @@
                 }
 
                 if (generatedTokenCount >= maxTokens) {
-                    log(`Stopping criteria met: Generation maximum length context threshold limit reached (${maxTokens} tokens).`);
+                    log(`Stopping criteria met: Max length cutoff hit (${maxTokens} tokens).`);
                     activePromptCallback = null;
                     generatingMessageEl.innerText = `Cluster Node: ${generatedString} [STOP_CRITERIA: MAX_LENGTH]`;
                     return;
                 }
 
+                // Loop the raw index value natively without using a temporary coordinator tensor object
                 lastTokenIndex = nextTokenIndex;
                 emitNetworkPayload('GENERATION_STEP_REQUEST', {
                     lastTokenIndex: lastTokenIndex,
@@ -195,16 +198,10 @@
                 });
             };
 
-            // FIXED: Extracted data immediately via synchronous execution tracking to protect underlying WebGL context mapping stability
-            tf.tidy(() => {
-                const targetShape = currentWeightProfile === "autoregressive_tiny" ? [1, VOCAB_SIZE] : [1, 784];
-                const sequenceTensor = tf.randomNormal(targetShape);
-                const nativeData = sequenceTensor.dataSync(); // Synchronous execution capture handles lifecycle stability
-                
-                emitNetworkPayload('GENERATION_STEP_REQUEST', {
-                    lastTokenIndex: lastTokenIndex,
-                    sequenceId: sequenceId
-                });
+            // Safely dispatch initial seed index over the mesh channel wire
+            emitNetworkPayload('GENERATION_STEP_REQUEST', {
+                lastTokenIndex: lastTokenIndex,
+                sequenceId: sequenceId
             });
         }
 
